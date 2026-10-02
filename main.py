@@ -16,9 +16,10 @@ logger = logging.getLogger(__name__)
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "svarmaster-secret-2025")
 ADMIN_ID = os.getenv("ADMIN_ID", "")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+MAX_API_URL = "https://botapi.max.ru"
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("MAX_BOT_TOKEN не задан!")
@@ -29,38 +30,55 @@ dp = Dispatcher()
 user_states = {}
 user_locks = set()
 
-admin_chat_id = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
+ALL_PAYLOADS = {
+    "services", "prices", "terms", "contact", "calc", "lead",
+    "show_wa", "show_tg", "show_max", "show_call", "back_to_menu",
+    "calc_vorota", "calc_kalitka", "calc_naves", "calc_lestnica",
+    "calc_ograzhdenie", "calc_pokraska", "calc_mangal", "calc_kozyrek",
+    "calc_zabor", "calc_svarka",
+}
 
 
-async def send_to_max(chat_id, text):
-    """Отправка с полным логированием ответа"""
+async def send_max_direct(user_id, text):
+    """Отправка уведомления в MAX напрямую через HTTP"""
+    if not user_id:
+        logger.warning("send_max_direct: пустой user_id")
+        return False
+
+    url = f"{MAX_API_URL}/messages"
+    params = {"user_id": user_id, "access_token": MAX_BOT_TOKEN}
+    payload = {"text": text}
+
     try:
-        result = await bot.send_message(chat_id=chat_id, text=text)
-        logger.info(f"MAX RESPONSE: type={type(result)} value={result}")
-        return result
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(url, params=params, json=payload)
+            logger.info(f"MAX DIRECT: status={r.status_code} body={r.text[:300]}")
+            return r.status_code == 200
     except Exception as e:
-        logger.error(f"MAX EXCEPTION: {type(e).__name__}: {e}")
-        return None
+        logger.error(f"MAX DIRECT EXCEPTION: {type(e).__name__}: {e}")
+        return False
+
+
+async def send_telegram(text):
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+            )
+            logger.info(f"TG: status={r.status_code}")
+    except Exception as e:
+        logger.error(f"TG error: {e}")
 
 
 async def notify_admin(text):
-    global admin_chat_id
-
-    if admin_chat_id:
-        logger.info(f"Отправляю в MAX на chat_id={admin_chat_id}")
-        await send_to_max(admin_chat_id, text)
+    if ADMIN_ID:
+        await send_max_direct(int(ADMIN_ID), text)
     else:
-        logger.warning("admin_chat_id не задан")
-
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(
-                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-                )
-        except Exception as e:
-            logger.error(f"TG notify error: {e}")
+        logger.warning("ADMIN_ID не задан")
+    await send_telegram(text)
 
 
 # ========== ТЕКСТЫ ==========
@@ -125,6 +143,7 @@ CALC_SERVICES = {
 }
 
 
+# ========== КЛАВИАТУРЫ ==========
 def main_menu_kb():
     b = InlineKeyboardBuilder()
     b.row(CallbackButton(text="🔧 Услуги", payload="services"), CallbackButton(text="💰 Цены", payload="prices"))
@@ -202,7 +221,10 @@ def calculate_result(service_key, text):
         if "price_per_step" in service:
             return int(x * service["price_per_step"]), f"{x} ступ. × {service['price_per_step']} ₽"
         if "price_per_m2" in service:
-            price = 500 if x < 10 else (400 if x < 100 else 300) if service_key == "calc_pokraska" else service["price_per_m2"]
+            if service_key == "calc_pokraska":
+                price = 500 if x < 10 else (400 if x < 100 else 300)
+            else:
+                price = service["price_per_m2"]
             return int(x * price), f"{x} м² × {price} ₽/м²"
         if "price_per_hour" in service:
             return int(x * service["price_per_hour"]), f"{x} ч × {service['price_per_hour']} ₽/ч"
@@ -234,31 +256,14 @@ def get_real_user_id(event):
     return None
 
 
-def get_chat_id(event):
-    r = getattr(event.message, "recipient", None)
-    if r and getattr(r, "chat_id", None):
-        return r.chat_id
-    if hasattr(event.message, "chat_id") and event.message.chat_id:
-        return event.message.chat_id
-    if r and getattr(r, "user_id", None):
-        return r.user_id
-    return None
-
-
+# ========== ОБРАБОТЧИКИ ==========
 @dp.message_created(CommandStart())
 async def cmd_start(event: MessageCreated):
-    global admin_chat_id
     user_id = event.message.sender.user_id
     if user_id in user_locks:
         return
     user_locks.add(user_id)
     try:
-        if ADMIN_ID and str(user_id) == str(ADMIN_ID):
-            cid = get_chat_id(event)
-            if cid and cid != admin_chat_id:
-                admin_chat_id = cid
-                logger.info(f"ADMIN chat_id обновлён: {admin_chat_id}")
-
         name = event.message.sender.first_name or "—"
         logger.info(f"/start user_id={user_id}")
         await notify_admin(f"🆕 Новый пользователь: {name} (ID {user_id})")
@@ -269,7 +274,6 @@ async def cmd_start(event: MessageCreated):
 
 @dp.message_callback()
 async def handle_callback(event: MessageCallback):
-    global admin_chat_id
     try:
         payload = event.callback.payload
     except AttributeError:
@@ -284,12 +288,6 @@ async def handle_callback(event: MessageCallback):
         user_locks.add(user_id)
 
     try:
-        if ADMIN_ID and str(user_id) == str(ADMIN_ID):
-            cid = get_chat_id(event)
-            if cid and cid != admin_chat_id:
-                admin_chat_id = cid
-                logger.info(f"ADMIN chat_id обновлён: {admin_chat_id}")
-
         name = "—"
         for attr in ("sender", "recipient"):
             obj = getattr(event.message, attr, None)
@@ -350,7 +348,6 @@ async def handle_callback(event: MessageCallback):
 
 @dp.message_created(F.message.body.text)
 async def handle_text(event: MessageCreated):
-    global admin_chat_id
     text = event.message.body.text.strip()
     text_lower = text.lower()
 
@@ -363,24 +360,17 @@ async def handle_text(event: MessageCreated):
     user_locks.add(user_id)
 
     try:
-        if ADMIN_ID and str(user_id) == str(ADMIN_ID):
-            cid = get_chat_id(event)
-            if cid and cid != admin_chat_id:
-                admin_chat_id = cid
-                logger.info(f"ADMIN chat_id обновлён: {admin_chat_id}")
-
         name = event.message.sender.first_name or "—"
         logger.info(f"MSG user_id={user_id}: {text}")
 
         if text_lower == "/whoami":
-            cid = get_chat_id(event)
             await event.message.answer(
-                f"user_id: `{user_id}`\n"
-                f"chat_id: `{cid}`\n"
-                f"recipient: `{event.message.recipient}`"
+                f"Ваш user_id (ADMIN_ID): `{user_id}`\n\n"
+                f"Скопируйте и проверьте в Railway."
             )
             return
         if text_lower == "/admin_test":
+            logger.info(f"ЗАПУСК admin_test, ADMIN_ID={ADMIN_ID}")
             await notify_admin(f"🔔 Тест от {name} (ID {user_id})")
             await event.message.answer("✅ Отправлено. Проверь MAX и Telegram.")
             return
@@ -438,6 +428,7 @@ async def handle_text(event: MessageCreated):
         user_locks.discard(user_id)
 
 
+# ========== ЗАПУСК ==========
 async def main():
     public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
     if not public_domain:
