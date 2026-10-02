@@ -22,7 +22,6 @@ if not MAX_BOT_TOKEN:
 bot = Bot(MAX_BOT_TOKEN)
 dp = Dispatcher()
 
-# Состояния и защита от дублей
 user_states = {}
 user_locks = set()
 seen_users = set()
@@ -34,6 +33,7 @@ ALL_PAYLOADS = {
     "calc_ograzhdenie", "calc_pokraska", "calc_mangal", "calc_kozyrek",
     "calc_zabor", "calc_svarka",
 }
+
 
 def get_real_user_id(event):
     if hasattr(event, "callback") and event.callback is not None:
@@ -48,6 +48,7 @@ def get_real_user_id(event):
         return s.user_id
     return None
 
+
 async def notify_admin(text):
     if not ADMIN_ID:
         return
@@ -55,6 +56,7 @@ async def notify_admin(text):
         await bot.send_message(chat_id=int(ADMIN_ID), text=text)
     except Exception as e:
         logger.error(f"notify_admin error: {e}")
+
 
 # ========== ТЕКСТЫ ==========
 TEXT_MENU = "Здравствуйте! Я бот сварочной мастерской СварМастер.\nЧем могу помочь?\n\nВыберите пункт меню ниже:"
@@ -164,6 +166,7 @@ CALC_SERVICES = {
     },
 }
 
+
 # ========== КЛАВИАТУРЫ ==========
 def main_menu_kb():
     b = InlineKeyboardBuilder()
@@ -171,6 +174,7 @@ def main_menu_kb():
     b.row(CallbackButton(text="🧮 Калькулятор", payload="calc"))
     b.row(CallbackButton(text="⏱ Сроки", payload="terms"), CallbackButton(text="📞 Оператор", payload="contact"))
     return b.as_markup()
+
 
 def contact_kb():
     b = InlineKeyboardBuilder()
@@ -181,10 +185,12 @@ def contact_kb():
     b.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
     return b.as_markup()
 
+
 def back_kb():
     b = InlineKeyboardBuilder()
     b.row(CallbackButton(text="⬅ Назад в меню", payload="back_to_menu"))
     return b.as_markup()
+
 
 def calculator_kb():
     b = InlineKeyboardBuilder()
@@ -201,10 +207,12 @@ def calculator_kb():
     b.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
     return b.as_markup()
 
+
 def cancel_kb():
     b = InlineKeyboardBuilder()
     b.row(CallbackButton(text="❌ Отмена", payload="back_to_menu"))
     return b.as_markup()
+
 
 def calc_result_kb():
     b = InlineKeyboardBuilder()
@@ -212,6 +220,7 @@ def calc_result_kb():
     b.row(CallbackButton(text="🧮 Ещё расчёт", payload="calc"))
     b.row(CallbackButton(text="⬅ В меню", payload="back_to_menu"))
     return b.as_markup()
+
 
 # ========== РАСЧЁТ ==========
 def calculate_result(service_key, text):
@@ -257,6 +266,7 @@ def calculate_result(service_key, text):
 
     return None, "Не могу посчитать"
 
+
 # ========== /start ==========
 @dp.message_created(CommandStart())
 async def cmd_start(event: MessageCreated):
@@ -273,6 +283,7 @@ async def cmd_start(event: MessageCreated):
         await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
     finally:
         user_locks.discard(user_id)
+
 
 # ========== CALLBACK ==========
 @dp.message_callback()
@@ -350,6 +361,7 @@ async def handle_callback(event: MessageCallback):
         if user_id:
             user_locks.discard(user_id)
 
+
 # ========== ТЕКСТ ==========
 @dp.message_created(F.message.body.text)
 async def handle_text(event: MessageCreated):
@@ -378,7 +390,6 @@ async def handle_text(event: MessageCreated):
             return
 
         if user_id in user_states and user_states[user_id].get("step") == "waiting_number":
-            # Атомарно забираем состояние — второй параллельный вызов его не найдёт
             state = user_states.pop(user_id, None)
             if state is None:
                 return
@@ -422,12 +433,25 @@ async def handle_text(event: MessageCreated):
     finally:
         user_locks.discard(user_id)
 
+
 # ========== ЗАПУСК ==========
 async def main():
     public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
     if not public_domain:
         await dp.start_polling(bot)
         return
+
+    # 1. Удаляем все старые подписки — чтобы не было дублей
+    try:
+        await bot.delete_webhook()
+        logger.info("Старые подписки удалены")
+    except Exception as e:
+        logger.info(f"delete_webhook не сработал: {e}")
+
+    # 2. Пауза — чтобы MAX успел обработать удаление
+    await asyncio.sleep(2)
+
+    # 3. Подписываем заново
     webhook_url = f"https://{public_domain}/webhook"
     logger.info(f"Webhook: {webhook_url}")
     await bot.subscribe_webhook(
@@ -436,7 +460,9 @@ async def main():
         secret=WEBHOOK_SECRET
     )
     logger.info("Webhook OK")
+
     await dp.handle_webhook(bot=bot, host="0.0.0.0", port=8080, path="/webhook", secret=WEBHOOK_SECRET)
+
 
 if __name__ == "__main__":
     import asyncio
