@@ -29,7 +29,6 @@ dp = Dispatcher()
 user_states = {}
 seen_users = set()
 
-# Все payload'ы наших inline-кнопок — чтобы отличить callback от обычного текста
 ALL_PAYLOADS = {
     "services", "prices", "terms", "contact", "calc",
     "show_wa", "show_tg", "show_max", "show_call", "back_to_menu",
@@ -38,9 +37,38 @@ ALL_PAYLOADS = {
 }
 
 
+def get_real_user_id(event):
+    """
+    Достаёт ID реального пользователя (не бота).
+    Пробует несколько мест, пока не найдёт.
+    """
+    candidates = []
+
+    # 1. callback.user_id (если есть в структуре Callback)
+    if hasattr(event, "callback") and event.callback is not None:
+        if hasattr(event.callback, "user") and event.callback.user is not None:
+            candidates.append(("callback.user.user_id", getattr(event.callback.user, "user_id", None)))
+
+    # 2. event.message.recipient.user_id — для callback, где sender — бот
+    if hasattr(event.message, "recipient") and event.message.recipient is not None:
+        candidates.append(("message.recipient.user_id", getattr(event.message.recipient, "user_id", None)))
+
+    # 3. event.message.sender.user_id — для обычных сообщений
+    if hasattr(event.message, "sender") and event.message.sender is not None:
+        candidates.append(("message.sender.user_id", getattr(event.message.sender, "user_id", None)))
+
+    for label, val in candidates:
+        if val:
+            logger.info(f"USER_ID из {label} = {val}")
+            return val
+
+    logger.warning(f"НЕ НАЙДЕН user_id, кандидаты: {candidates}")
+    return None
+
+
 async def notify_admin(text: str):
     if not ADMIN_ID:
-        logger.warning("ADMIN_ID не задан — уведомление не отправлено")
+        logger.warning("ADMIN_ID не задан")
         return
     try:
         await bot.send_message(chat_id=int(ADMIN_ID), text=text)
@@ -95,7 +123,6 @@ TEXT_CALC_INTRO = "🧮 *Калькулятор стоимости*\n\nВыбе�
 
 TEXT_FALLBACK = "Пожалуйста, воспользуйтесь кнопками меню ниже 👇"
 
-# ---------- УСЛУГИ КАЛЬКУЛЯТОРА ----------
 CALC_SERVICES = {
     "calc_vorota":      {"name": "Откатные ворота",    "unit": "м²",       "price": 4500, "question": "Введите площадь ворот в м².\nНапример: 4.5"},
     "calc_naves":       {"name": "Навес",               "unit": "м²",       "price": 3800, "question": "Введите площадь навеса в м².\nНапример: 20"},
@@ -172,22 +199,27 @@ async def cmd_start(event: MessageCreated):
     await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
 
 
-# ---------- CALLBACK (обработчик кнопок) ----------
+# ---------- CALLBACK ----------
 @dp.message_callback()
 async def handle_callback(event: MessageCallback):
-    """Обработка нажатий на inline-кнопки"""
     try:
         payload = event.callback.payload
     except AttributeError:
-        logger.warning("Callback без payload — пропуск")
+        logger.warning("Callback без payload")
         return
 
     if not payload:
         return
 
-    user_id = event.message.sender.user_id
-    name = event.message.sender.first_name or "—"
+    user_id = get_real_user_id(event)
     logger.info(f"CALLBACK: {payload} от user_id={user_id}")
+
+    name = "—"
+    for attr in ("sender", "recipient"):
+        obj = getattr(event.message, attr, None)
+        if obj and getattr(obj, "first_name", None):
+            name = obj.first_name
+            break
 
     # Калькулятор — выбор услуги
     if payload in CALC_SERVICES:
@@ -197,9 +229,12 @@ async def handle_callback(event: MessageCallback):
                 f"🔥 *{service['name']}*\n\nПримерная стоимость: *от {service['price']} ₽*\n\n_Точную цену назовём после обсуждения._",
                 attachments=[calc_result_kb()]
             )
-            await notify_admin(f"🔥 *Интерес к мангалу*\n\nID: `{user_id}`\nИмя: {name}")
+            if user_id:
+                await notify_admin(f"🔥 *Интерес к мангалу*\n\nID: `{user_id}`\nИмя: {name}")
         else:
-            user_states[user_id] = {"service_key": payload, "step": "waiting_number"}
+            if user_id:
+                user_states[user_id] = {"service_key": payload, "step": "waiting_number"}
+                logger.info(f"SAVED state for user_id={user_id}: {user_states[user_id]}")
             await event.message.answer(
                 f"🧮 *{service['name']}*\n\n{service['question']}",
                 attachments=[cancel_kb()]
@@ -214,7 +249,8 @@ async def handle_callback(event: MessageCallback):
         await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
     elif payload == "contact":
         await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
-        await notify_admin(f"📞 *Клиент хочет связаться!*\n\nID: `{user_id}`\nИмя: {name}")
+        if user_id:
+            await notify_admin(f"📞 *Клиент хочет связаться!*\n\nID: `{user_id}`\nИмя: {name}")
     elif payload == "calc":
         await event.message.answer(TEXT_CALC_INTRO, attachments=[calculator_kb()])
     elif payload == "show_wa":
@@ -226,22 +262,19 @@ async def handle_callback(event: MessageCallback):
     elif payload == "show_call":
         await event.message.answer(TEXT_CALL)
     elif payload == "back_to_menu":
-        if user_id in user_states:
+        if user_id and user_id in user_states:
             del user_states[user_id]
         await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
     else:
         await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
 
 
-# ---------- ТЕКСТ (обычные сообщения) ----------
+# ---------- ТЕКСТ ----------
 @dp.message_created(F.message.body.text)
 async def handle_text(event: MessageCreated):
-    """Обработка текстовых сообщений. Callback-события игнорируются."""
-
     text = event.message.body.text.strip()
     text_lower = text.lower()
 
-    # Защита: если это payload от кнопки — игнорируем (его обработает handle_callback)
     if text_lower in ALL_PAYLOADS:
         logger.info(f"SKIP payload-as-text: {text_lower}")
         return
@@ -249,22 +282,109 @@ async def handle_text(event: MessageCreated):
     user_id = event.message.sender.user_id
     logger.info(f"MSG от user_id={user_id}: {text}")
 
-    # /whoami
-    if text_lower == "/whoami" or "кто я" in text_lower:
-        await event.message.answer(f"Ваш user_id: `{user_id}`\n\nСкопируйте и передайте владельцу бота.")
+    # DEBUG — покажет структуру события
+    if text_lower == "/debug":
+        info = []
+        info.append(f"`sender.user_id` = {getattr(event.message.sender, 'user_id', '—')}")
+        info.append(f"`sender.first_name` = {getattr(event.message.sender, 'first_name', '—')}")
+        info.append(f"`recipient.user_id` = {getattr(getattr(event.message, 'recipient', None), 'user_id', '—')}")
+        info.append(f"`recipient.chat_id` = {getattr(getattr(event.message, 'recipient', None), 'chat_id', '—')}")
+        info.append(f"`callback` = {getattr(event, 'callback', None)}")
+        await event.message.answer("```\n" + "\n".join(info) + "\n```")
         return
 
-    # /admin_test
+    if text_lower == "/whoami":
+        await event.message.answer(f"Ваш user_id: `{user_id}`")
+        return
+
     if text_lower == "/admin_test":
-        await notify_admin(f"🔔 Тестовое уведомление от {user_id}")
-        await event.message.answer("Уведомление отправлено админу.")
+        await notify_admin(f"🔔 Тест от {user_id}")
+        await event.message.answer("Уведомление отправлено.")
         return
 
-    # === КАЛЬКУЛЯТОР: ожидание числа ===
+    # Калькулятор — ожидание числа
     if user_id in user_states and user_states[user_id].get("step") == "waiting_number":
+        logger.info(f"Найден state для user_id={user_id}: {user_states[user_id]}")
         try:
             number = float(text.replace(",", "."))
             key = user_states[user_id]["service_key"]
+            service = CALC_SERVICES[key]
+            total = int(number * service["price"])
+
+            await event.message.answer(
+                f"🧮 *Расчёт для: {service['name']}*\n\n"
+                f"• Количество: {number} {service['unit']}\n"
+                f"• Цена за единицу: {service['price']} ₽\n"
+                f"• *Примерная стоимость: ~{total} ₽*\n\n"
+                f"_Точную стоимость назовём после замера._",
+                attachments=[calc_result_kb()]
+            )
+
+            await notify_admin(
+                f"🧮 *Расчёт*\n\nID: `{user_id}`\nУслуга: {service['name']}\nКол-во: {number} {service['unit']}\nИтог: *~{total} ₽*"
+            )
+
+            del user_states[user_id]
+            return
+        except ValueError:
+            await event.message.answer(
+                "Пожалуйста, введите число.\nНапример: `4.5` или `20`",
+                attachments=[cancel_kb()]
+            )
+            return
+    else:
+        if user_id in user_states:
+            logger.info(f"STATE есть, но step не waiting_number: {user_states[user_id]}")
+        else:
+            logger.info(f"STATE НЕТ для user_id={user_id}. В памяти: {list(user_states.keys())}")
+
+    if "услуг" in text_lower:
+        await event.message.answer(TEXT_SERVICES, attachments=[back_kb()])
+    elif "цен" in text_lower:
+        await event.message.answer(TEXT_PRICES, attachments=[back_kb()])
+    elif "срок" in text_lower:
+        await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
+    elif "оператор" in text_lower or "связаться" in text_lower or "позвонить" in text_lower:
+        await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
+    elif "калькулятор" in text_lower or "расчёт" in text_lower or "расчет" in text_lower:
+        await event.message.answer(TEXT_CALC_INTRO, attachments=[calculator_kb()])
+    elif "привет" in text_lower or "здравств" in text_lower:
+        await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
+    else:
+        await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
+
+
+# ---------- ЗАПУСК ----------
+async def main():
+    public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    if not public_domain:
+        logger.error("RAILWAY_PUBLIC_DOMAIN не задан! Запуск через polling...")
+        await dp.start_polling(bot)
+        return
+
+    webhook_url = f"https://{public_domain}/webhook"
+    logger.info(f"Регистрирую webhook: {webhook_url}")
+
+    await bot.subscribe_webhook(
+        url=webhook_url,
+        update_types=[
+            UpdateType.MESSAGE_CREATED,
+            UpdateType.BOT_STARTED,
+            UpdateType.MESSAGE_CALLBACK,
+        ],
+        secret=WEBHOOK_SECRET
+    )
+    logger.info("Webhook зарегистрирован")
+
+    await dp.handle_webhook(
+        bot=bot, host="0.0.0.0", port=8080,
+        path="/webhook", secret=WEBHOOK_SECRET
+    )
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())ser_id]["service_key"]
             service = CALC_SERVICES[key]
             total = int(number * service["price"])
 
