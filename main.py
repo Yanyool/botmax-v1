@@ -2,18 +2,21 @@ import os
 import logging
 from maxapi import Bot, Dispatcher, F
 from maxapi.filters.command import CommandStart
-from maxapi.types import BotStarted, MessageCreated
+from maxapi.types import (
+    MessageCreated,
+    MessageCallback,
+    CallbackButton,
+    LinkButton,
+)
+from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.enums.update import UpdateType
 from dotenv import load_dotenv
 
-# Загружаем переменные окружения (для локального теста)
 load_dotenv()
 
-# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Переменные окружения
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "svarmaster-secret-2025")
 
@@ -23,19 +26,15 @@ if not MAX_BOT_TOKEN:
 bot = Bot(MAX_BOT_TOKEN)
 dp = Dispatcher()
 
-# ---------- ТЕКСТЫ ОТВЕТОВ ----------
+# ---------- ТЕКСТЫ ----------
 TEXT_MENU = (
     "Здравствуйте! Я бот сварочной мастерской СварМастер.\n"
     "Чем могу помочь?\n\n"
-    "Напишите:\n"
-    "• *услуги* — список услуг\n"
-    "• *цены* — прайс-лист\n"
-    "• *сроки* — сроки изготовления\n"
-    "• *оператор* — связаться с нами"
+    "Выберите пункт меню ниже:"
 )
 
 TEXT_SERVICES = (
-    "🔧 Наши услуги:\n\n"
+    "🔧 *Наши услуги:*\n\n"
     "• Сварочные работы\n"
     "• Ворота и калитки\n"
     "• Навесы и козырьки\n"
@@ -47,7 +46,7 @@ TEXT_SERVICES = (
 )
 
 TEXT_PRICES = (
-    "💰 Цены:\n\n"
+    "💰 *Цены:*\n\n"
     "• Сварочные работы — от 1500 ₽/час\n"
     "• Ворота — от 4500 ₽/м²\n"
     "• Навесы — от 3800 ₽/м²\n"
@@ -57,68 +56,112 @@ TEXT_PRICES = (
 )
 
 TEXT_TERMS = (
-    "⏱️ Сроки изготовления:\n\n"
+    "⏱ *Сроки изготовления:*\n\n"
     "• Стандартный заказ — 5–10 рабочих дней\n"
     "• Срочный заказ — от 2 дней (наценка 30%)\n\n"
     "Сроки фиксируются в договоре."
 )
 
 TEXT_CONTACT = (
-    "📞 Связаться с оператором:\n\n"
-    "WhatsApp: https://wa.me/79159190508\n"
-    "Telegram: https://t.me/SKYHITORED\n"
-    "Телефон: +7 (915) 919-05-08"
+    "📞 *Связаться с оператором:*\n\n"
+    "Выберите удобный способ:"
 )
 
 TEXT_FALLBACK = (
-    "Я пока не понимаю такие сообщения.\n\n"
-    "Напишите:\n"
-    "• *услуги*\n"
-    "• *цены*\n"
-    "• *сроки*\n"
-    "• *оператор*"
+    "Пожалуйста, воспользуйтесь кнопками меню ниже 👇"
 )
 
-# ---------- ОБРАБОТЧИКИ ----------
+# ---------- КЛАВИАТУРЫ ----------
 
-@dp.bot_started()
-async def bot_started(event: BotStarted):
-    """Нажатие кнопки 'Старт'"""
-    logger.info(f"BOT_STARTED от chat_id={event.chat_id}")
-    await bot.send_message(chat_id=event.chat_id, text=TEXT_MENU)
+def main_menu_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        CallbackButton(text="🔧 Услуги", payload="services"),
+        CallbackButton(text="💰 Цены", payload="prices"),
+    )
+    builder.row(
+        CallbackButton(text="⏱ Сроки", payload="terms"),
+        CallbackButton(text="📞 Оператор", payload="contact"),
+    )
+    return builder.as_markup()
 
+
+def contact_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        LinkButton(text="💬 WhatsApp", url="https://wa.me/79159190508")
+    )
+    builder.row(
+        LinkButton(text="✈️ Telegram", url="https://t.me/SKYHITORED")
+    )
+    builder.row(
+        LinkButton(text="📱 Позвонить", url="tel:+79159190508")
+    )
+    builder.row(
+        CallbackButton(text="⬅ Назад", payload="back_to_menu")
+    )
+    return builder.as_markup()
+
+
+def back_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        CallbackButton(text="⬅ Назад в меню", payload="back_to_menu")
+    )
+    return builder.as_markup()
+
+
+# ---------- ОБРАБОТЧИКИ СООБЩЕНИЙ ----------
 
 @dp.message_created(CommandStart())
 async def cmd_start(event: MessageCreated):
-    """Команда /start"""
     logger.info(f"CMD /start от user_id={event.message.sender.user_id}")
-    await event.message.answer(TEXT_MENU)
+    await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
 
 
 @dp.message_created(F.message.body.text)
 async def handle_text(event: MessageCreated):
-    """Обработка текстовых сообщений"""
     text = event.message.body.text.strip().lower()
     logger.info(f"MSG: {text}")
 
     if "услуг" in text:
-        await event.message.answer(TEXT_SERVICES)
+        await event.message.answer(TEXT_SERVICES, attachments=[back_kb()])
     elif "цен" in text:
-        await event.message.answer(TEXT_PRICES)
+        await event.message.answer(TEXT_PRICES, attachments=[back_kb()])
     elif "срок" in text:
-        await event.message.answer(TEXT_TERMS)
+        await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
     elif "оператор" in text or "связаться" in text or "позвонить" in text:
-        await event.message.answer(TEXT_CONTACT)
-    elif "привет" in text or "здравств" in text or "start" in text:
-        await event.message.answer(TEXT_MENU)
+        await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
+    elif "привет" in text or "здравств" in text:
+        await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
     else:
-        await event.message.answer(TEXT_FALLBACK)
+        await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
+
+
+# ---------- ОБРАБОТЧИК CALLBACK ----------
+
+@dp.message_callback()
+async def handle_callback(event: MessageCallback):
+    payload = event.callback.payload
+    logger.info(f"CALLBACK: {payload}")
+
+    if payload == "services":
+        await event.message.answer(TEXT_SERVICES, attachments=[back_kb()])
+    elif payload == "prices":
+        await event.message.answer(TEXT_PRICES, attachments=[back_kb()])
+    elif payload == "terms":
+        await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
+    elif payload == "contact":
+        await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
+    elif payload == "back_to_menu":
+        await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
+    else:
+        await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
 
 
 # ---------- ЗАПУСК ----------
 
 async def main():
-    """Запуск бота через webhook (для Railway)"""
     public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 
     if not public_domain:
@@ -129,7 +172,6 @@ async def main():
     webhook_url = f"https://{public_domain}/webhook"
     logger.info(f"Регистрирую webhook: {webhook_url}")
 
-    # 1. Подписываем бота на события MAX
     await bot.subscribe_webhook(
         url=webhook_url,
         update_types=[
@@ -141,7 +183,6 @@ async def main():
     )
     logger.info("Webhook успешно зарегистрирован")
 
-    # 2. Запускаем сервер, который слушает /webhook
     await dp.handle_webhook(
         bot=bot,
         host="0.0.0.0",
