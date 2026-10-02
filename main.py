@@ -29,58 +29,29 @@ dp = Dispatcher()
 user_states = {}
 user_locks = set()
 
-# Запоминаем chat_id админа — из переменной или из первого сообщения
 admin_chat_id = int(ADMIN_CHAT_ID) if ADMIN_CHAT_ID else None
 
-ALL_PAYLOADS = {
-    "services", "prices", "terms", "contact", "calc", "lead",
-    "show_wa", "show_tg", "show_max", "show_call", "back_to_menu",
-    "calc_vorota", "calc_kalitka", "calc_naves", "calc_lestnica",
-    "calc_ograzhdenie", "calc_pokraska", "calc_mangal", "calc_kozyrek",
-    "calc_zabor", "calc_svarka",
-}
 
-
-def get_real_user_id(event):
-    if hasattr(event, "callback") and event.callback is not None:
-        u = getattr(event.callback, "user", None)
-        if u and getattr(u, "user_id", None):
-            return u.user_id
-    r = getattr(event.message, "recipient", None)
-    if r and getattr(r, "user_id", None):
-        return r.user_id
-    s = getattr(event.message, "sender", None)
-    if s and getattr(s, "user_id", None):
-        return s.user_id
-    return None
-
-
-def get_chat_id(event):
-    """Пытается вытащить chat_id из события"""
-    r = getattr(event.message, "recipient", None)
-    if r and getattr(r, "chat_id", None):
-        return r.chat_id
-    if hasattr(event.message, "chat_id") and event.message.chat_id:
-        return event.message.chat_id
-    if r and getattr(r, "user_id", None):
-        return r.user_id
-    return None
+async def send_to_max(chat_id, text):
+    """Отправка с полным логированием ответа"""
+    try:
+        result = await bot.send_message(chat_id=chat_id, text=text)
+        logger.info(f"MAX RESPONSE: type={type(result)} value={result}")
+        return result
+    except Exception as e:
+        logger.error(f"MAX EXCEPTION: {type(e).__name__}: {e}")
+        return None
 
 
 async def notify_admin(text):
     global admin_chat_id
 
-    # MAX — по chat_id
     if admin_chat_id:
-        try:
-            await bot.send_message(chat_id=admin_chat_id, text=text)
-            logger.info(f"MAX уведомление → chat_id={admin_chat_id}")
-        except Exception as e:
-            logger.error(f"MAX admin error: {e}")
+        logger.info(f"Отправляю в MAX на chat_id={admin_chat_id}")
+        await send_to_max(admin_chat_id, text)
     else:
-        logger.warning("admin_chat_id не задан — MAX уведомление не отправлено")
+        logger.warning("admin_chat_id не задан")
 
-    # Telegram
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -154,7 +125,6 @@ CALC_SERVICES = {
 }
 
 
-# ========== КЛАВИАТУРЫ ==========
 def main_menu_kb():
     b = InlineKeyboardBuilder()
     b.row(CallbackButton(text="🔧 Услуги", payload="services"), CallbackButton(text="💰 Цены", payload="prices"))
@@ -232,10 +202,7 @@ def calculate_result(service_key, text):
         if "price_per_step" in service:
             return int(x * service["price_per_step"]), f"{x} ступ. × {service['price_per_step']} ₽"
         if "price_per_m2" in service:
-            if service_key == "calc_pokraska":
-                price = 500 if x < 10 else (400 if x < 100 else 300)
-            else:
-                price = service["price_per_m2"]
+            price = 500 if x < 10 else (400 if x < 100 else 300) if service_key == "calc_pokraska" else service["price_per_m2"]
             return int(x * price), f"{x} м² × {price} ₽/м²"
         if "price_per_hour" in service:
             return int(x * service["price_per_hour"]), f"{x} ч × {service['price_per_hour']} ₽/ч"
@@ -253,7 +220,31 @@ def calculate_result(service_key, text):
     return None, "Не могу посчитать"
 
 
-# ========== /start ==========
+def get_real_user_id(event):
+    if hasattr(event, "callback") and event.callback is not None:
+        u = getattr(event.callback, "user", None)
+        if u and getattr(u, "user_id", None):
+            return u.user_id
+    r = getattr(event.message, "recipient", None)
+    if r and getattr(r, "user_id", None):
+        return r.user_id
+    s = getattr(event.message, "sender", None)
+    if s and getattr(s, "user_id", None):
+        return s.user_id
+    return None
+
+
+def get_chat_id(event):
+    r = getattr(event.message, "recipient", None)
+    if r and getattr(r, "chat_id", None):
+        return r.chat_id
+    if hasattr(event.message, "chat_id") and event.message.chat_id:
+        return event.message.chat_id
+    if r and getattr(r, "user_id", None):
+        return r.user_id
+    return None
+
+
 @dp.message_created(CommandStart())
 async def cmd_start(event: MessageCreated):
     global admin_chat_id
@@ -262,7 +253,6 @@ async def cmd_start(event: MessageCreated):
         return
     user_locks.add(user_id)
     try:
-        # Если пишет админ — сохраняем chat_id
         if ADMIN_ID and str(user_id) == str(ADMIN_ID):
             cid = get_chat_id(event)
             if cid and cid != admin_chat_id:
@@ -271,13 +261,12 @@ async def cmd_start(event: MessageCreated):
 
         name = event.message.sender.first_name or "—"
         logger.info(f"/start user_id={user_id}")
-        await notify_admin(f"🆕 Новый пользователь бота: {name} (ID {user_id})")
+        await notify_admin(f"🆕 Новый пользователь: {name} (ID {user_id})")
         await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
     finally:
         user_locks.discard(user_id)
 
 
-# ========== CALLBACK ==========
 @dp.message_callback()
 async def handle_callback(event: MessageCallback):
     global admin_chat_id
@@ -290,7 +279,6 @@ async def handle_callback(event: MessageCallback):
 
     user_id = get_real_user_id(event)
     if user_id and user_id in user_locks:
-        logger.info(f"CALLBACK {payload} — ПРОПУСК (lock {user_id})")
         return
     if user_id:
         user_locks.add(user_id)
@@ -309,8 +297,6 @@ async def handle_callback(event: MessageCallback):
                 name = obj.first_name
                 break
 
-        logger.info(f"CALLBACK {payload} user_id={user_id}")
-
         if payload in CALC_SERVICES:
             service = CALC_SERVICES[payload]
             if service["type"] == "fixed":
@@ -318,8 +304,6 @@ async def handle_callback(event: MessageCallback):
                     f"🔥 *{service['name']}*\n\nОриентировочно: *от {service['price']} ₽*\n\n_{service.get('desc', '')}_",
                     attachments=[calc_result_kb(service["price"])]
                 )
-                if user_id:
-                    await notify_admin(f"🔥 Интерес к мангалу: {name} (ID {user_id})")
             else:
                 if user_id:
                     user_states[user_id] = {"service_key": payload, "step": "waiting_number"}
@@ -364,7 +348,6 @@ async def handle_callback(event: MessageCallback):
             user_locks.discard(user_id)
 
 
-# ========== ТЕКСТ ==========
 @dp.message_created(F.message.body.text)
 async def handle_text(event: MessageCreated):
     global admin_chat_id
@@ -380,7 +363,6 @@ async def handle_text(event: MessageCreated):
     user_locks.add(user_id)
 
     try:
-        # Если пишет админ — запоминаем chat_id
         if ADMIN_ID and str(user_id) == str(ADMIN_ID):
             cid = get_chat_id(event)
             if cid and cid != admin_chat_id:
@@ -393,15 +375,13 @@ async def handle_text(event: MessageCreated):
         if text_lower == "/whoami":
             cid = get_chat_id(event)
             await event.message.answer(
-                f"Ваш user_id: `{user_id}`\n"
-                f"Ваш chat_id: `{cid}`\n\n"
-                f"Для Railway добавь:\n"
-                f"ADMIN_ID = {user_id}\n"
-                f"ADMIN_CHAT_ID = {cid}"
+                f"user_id: `{user_id}`\n"
+                f"chat_id: `{cid}`\n"
+                f"recipient: `{event.message.recipient}`"
             )
             return
         if text_lower == "/admin_test":
-            await notify_admin(f"🔔 Тестовое уведомление от {name} (ID {user_id})")
+            await notify_admin(f"🔔 Тест от {name} (ID {user_id})")
             await event.message.answer("✅ Отправлено. Проверь MAX и Telegram.")
             return
 
@@ -419,33 +399,24 @@ async def handle_text(event: MessageCreated):
 
                 discount = 0.1 if total >= 50000 else 0
                 final = int(total * (1 - discount))
-                disc_text = f"\n🎁 *Скидка 10% от объёма!*\n" if discount else ""
+                disc_text = f"\n🎁 *Скидка 10%!*\n" if discount else ""
                 formatted = f"{final:,}".replace(",", " ")
 
                 await event.message.answer(
                     f"🧮 *{service['name']}*\n\n"
-                    f"📐 Расчёт: {descr}\n"
-                    f"{disc_text}"
-                    f"💰 *Примерная стоимость: ~{formatted} ₽*\n\n"
-                    f"_Точную стоимость назовём после замера._",
+                    f"📐 {descr}\n{disc_text}"
+                    f"💰 *~{formatted} ₽*\n\n"
+                    f"_Точную стоимость — после замера._",
                     attachments=[calc_result_kb(total)]
                 )
                 await notify_admin(
-                    f"🧮 *Расчёт*\n\nID: `{user_id}` ({name})\n"
-                    f"Услуга: {service['name']}\nРасчёт: {descr}\n"
-                    f"Итог: *~{formatted} ₽*"
+                    f"🧮 Расчёт: {service['name']}, {descr}, ~{formatted} ₽ (ID {user_id})"
                 )
                 return
 
             if state and state.get("step") == "waiting_lead":
-                await notify_admin(
-                    f"📝 *НОВАЯ ЗАЯВКА!*\n\n"
-                    f"От: {name} (ID `{user_id}`)\n\n{text}"
-                )
-                await event.message.answer(
-                    "✅ *Заявка принята!*\n\nМы свяжемся с вами в ближайшее время.",
-                    attachments=[back_kb()]
-                )
+                await notify_admin(f"📝 *ЗАЯВКА!*\n\nОт: {name} (ID `{user_id}`)\n\n{text}")
+                await event.message.answer("✅ *Заявка принята!*", attachments=[back_kb()])
                 return
 
         if "услуг" in text_lower:
@@ -467,7 +438,6 @@ async def handle_text(event: MessageCreated):
         user_locks.discard(user_id)
 
 
-# ========== ЗАПУСК ==========
 async def main():
     public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
     if not public_domain:
