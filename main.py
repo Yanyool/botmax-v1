@@ -6,7 +6,6 @@ from maxapi.types import (
     MessageCreated,
     MessageCallback,
     CallbackButton,
-    LinkButton,
 )
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.enums.update import UpdateType
@@ -67,6 +66,21 @@ TEXT_CONTACT = (
     "Выберите удобный способ:"
 )
 
+TEXT_WA = (
+    "💬 *WhatsApp*\n\n"
+    "Напишите нам: https://wa.me/79159190508"
+)
+
+TEXT_TG = (
+    "✈️ *Telegram*\n\n"
+    "Напишите нам: https://t.me/SKYHITORED"
+)
+
+TEXT_CALL = (
+    "📱 *Позвонить*\n\n"
+    "Телефон: +7 (915) 919-05-08"
+)
+
 TEXT_FALLBACK = (
     "Пожалуйста, воспользуйтесь кнопками меню ниже 👇"
 )
@@ -89,16 +103,16 @@ def main_menu_kb():
 def contact_kb():
     builder = InlineKeyboardBuilder()
     builder.row(
-        LinkButton(text="💬 WhatsApp", url="https://wa.me/79159190508")
+        CallbackButton(text="💬 WhatsApp", payload="show_wa"),
     )
     builder.row(
-        LinkButton(text="✈️ Telegram", url="https://t.me/SKYHITORED")
+        CallbackButton(text="✈️ Telegram", payload="show_tg"),
     )
     builder.row(
-        LinkButton(text="📱 Позвонить", url="tel:+79159190508")
+        CallbackButton(text="📱 Позвонить", payload="show_call"),
     )
     builder.row(
-        CallbackButton(text="⬅ Назад", payload="back_to_menu")
+        CallbackButton(text="⬅ Назад", payload="back_to_menu"),
     )
     return builder.as_markup()
 
@@ -153,6 +167,12 @@ async def handle_callback(event: MessageCallback):
         await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
     elif payload == "contact":
         await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
+    elif payload == "show_wa":
+        await event.message.answer(TEXT_WA)
+    elif payload == "show_tg":
+        await event.message.answer(TEXT_TG)
+    elif payload == "show_call":
+        await event.message.answer(TEXT_CALL)
     elif payload == "back_to_menu":
         await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
     else:
