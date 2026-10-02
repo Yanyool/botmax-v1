@@ -103,7 +103,6 @@ TEXT_CALL = "📱 Позвонить: +7 (915) 919-05-08"
 TEXT_CALC_INTRO = "🧮 *Калькулятор стоимости*\n\nВыберите услугу:"
 TEXT_FALLBACK = "Пожалуйста, воспользуйтесь кнопками меню ниже 👇"
 
-# ========== УСЛУГИ КАЛЬКУЛЯТОРА ==========
 CALC_SERVICES = {
     "calc_vorota": {
         "name": "Откатные ворота", "type": "multi",
@@ -441,25 +440,25 @@ async def main():
         await dp.start_polling(bot)
         return
 
-    # 1. Удаляем все старые подписки — чтобы не было дублей
+    # 1. Снимаем ВСЕ старые подписки
     try:
         await bot.delete_webhook()
-        logger.info("Старые подписки удалены")
+        logger.info("✅ Старые подписки удалены")
     except Exception as e:
-        logger.info(f"delete_webhook не сработал: {e}")
+        logger.warning(f"⚠️ delete_webhook: {e}")
 
-    # 2. Пауза — чтобы MAX успел обработать удаление
+    # 2. Пауза, чтобы MAX обработал удаление
     await asyncio.sleep(2)
 
-    # 3. Подписываем заново
+    # 3. Подписываемся ТОЛЬКО на свой URL
     webhook_url = f"https://{public_domain}/webhook"
-    logger.info(f"Webhook: {webhook_url}")
+    logger.info(f"🔗 Webhook: {webhook_url}")
     await bot.subscribe_webhook(
         url=webhook_url,
         update_types=[UpdateType.MESSAGE_CREATED, UpdateType.BOT_STARTED, UpdateType.MESSAGE_CALLBACK],
         secret=WEBHOOK_SECRET
     )
-    logger.info("Webhook OK")
+    logger.info("✅ Webhook OK")
 
     await dp.handle_webhook(bot=bot, host="0.0.0.0", port=8080, path="/webhook", secret=WEBHOOK_SECRET)
 
