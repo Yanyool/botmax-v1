@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "svarmaster-secret-2025")
+ADMIN_ID = os.getenv("ADMIN_ID", "")
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("Переменная MAX_BOT_TOKEN не задана!")
@@ -25,8 +26,20 @@ if not MAX_BOT_TOKEN:
 bot = Bot(MAX_BOT_TOKEN)
 dp = Dispatcher()
 
-# Хранилище состояний пользователей (для калькулятора)
+# Хранилище
 user_states = {}
+seen_users = set()
+
+# ---------- УВЕДОМЛЕНИЯ АДМИНУ ----------
+async def notify_admin(text: str):
+    """Отправляет уведомление владельцу бота"""
+    if not ADMIN_ID:
+        logger.warning("ADMIN_ID не задан — уведомление не отправлено")
+        return
+    try:
+        await bot.send_message(chat_id=int(ADMIN_ID), text=text)
+    except Exception as e:
+        logger.error(f"Не смог отправить админу: {e}")
 
 # ---------- ТЕКСТЫ ----------
 TEXT_MENU = (
@@ -69,140 +82,104 @@ TEXT_CONTACT = (
     "Выберите удобный способ:"
 )
 
-TEXT_WA = (
-    "💬 *WhatsApp*\n\n"
-    "Напишите нам: https://wa.me/79159190508"
-)
-
-TEXT_TG = (
-    "✈️ *Telegram*\n\n"
-    "Напишите нам: https://t.me/SKYHITORED"
-)
-
-TEXT_MAX = (
-    "📱 *MAX Messenger*\n\n"
-    "Напишите нам: https://max.ru/u/f9LHodD0cOLt4DlpXkQuKcUA-rwanDwWOPRvmBInmJ1e_HlzRa6DjU1K1gU"
-)
-
-TEXT_CALL = (
-    "📱 *Позвонить*\n\n"
-    "Телефон: +7 (915) 919-05-08"
-)
+TEXT_WA = "💬 *WhatsApp*\n\nНапишите нам: https://wa.me/79159190508"
+TEXT_TG = "✈️ *Telegram*\n\nНапишите нам: https://t.me/SKYHITORED"
+TEXT_MAX = "📱 *MAX Messenger*\n\nНапишите нам: https://max.ru/u/f9LHodD0cOLt4DlpXkQuKcUA-rwanDwWOPRvmBInmJ1e_HlzRa6DjU1K1gU"
+TEXT_CALL = "📱 *Позвонить*\n\nТелефон: +7 (915) 919-05-08"
 
 TEXT_CALC_INTRO = (
     "🧮 *Калькулятор стоимости*\n\n"
     "Выберите услугу — я посчитаю примерную цену:"
 )
 
-TEXT_FALLBACK = (
-    "Пожалуйста, воспользуйтесь кнопками меню ниже 👇"
-)
+TEXT_FALLBACK = "Пожалуйста, воспользуйтесь кнопками меню ниже 👇"
 
 # ---------- УСЛУГИ ДЛЯ КАЛЬКУЛЯТОРА ----------
 CALC_SERVICES = {
-    "calc_vorota": {
-        "name": "Откатные ворота",
-        "unit": "м²",
-        "price": 4500,
-        "question": "Введите площадь ворот в м² (ширина × высота).\nНапример: 4.5",
-    },
-    "calc_naves": {
-        "name": "Навес",
-        "unit": "м²",
-        "price": 3800,
-        "question": "Введите площадь навеса в м² (длина × ширина).\nНапример: 20",
-    },
-    "calc_lestnica": {
-        "name": "Лестница",
-        "unit": "ступеней",
-        "price": 2200,
-        "question": "Введите количество ступеней.\nНапример: 10",
-    },
-    "calc_ograzhdenie": {
-        "name": "Ограждение / перила",
-        "unit": "пог. м",
-        "price": 1800,
-        "question": "Введите длину ограждения в метрах.\nНапример: 15",
-    },
-    "calc_pokraska": {
-        "name": "Порошковая покраска",
-        "unit": "м²",
-        "price": 1200,
-        "question": "Введите площадь покраски в м².\nНапример: 8",
-    },
-    "calc_mangal": {
-        "name": "Мангал / барбекю",
-        "unit": "шт.",
-        "price": 8000,
-        "question": None,  # фикс-цена
-    },
+    "calc_vorota":       {"name": "Откатные ворота",      "unit": "м²",        "price": 4500, "question": "Введите площадь ворот в м².\nНапример: 4.5"},
+    "calc_naves":        {"name": "Навес",                 "unit": "м²",        "price": 3800, "question": "Введите площадь навеса в м².\nНапример: 20"},
+    "calc_lestnica":     {"name": "Лестница",              "unit": "ступеней",  "price": 2200, "question": "Введите количество ступеней.\nНапример: 10"},
+    "calc_ograzhdenie":  {"name": "Ограждение / перила",   "unit": "пог. м",    "price": 1800, "question": "Введите длину в метрах.\nНапример: 15"},
+    "calc_pokraska":     {"name": "Порошковая покраска",   "unit": "м²",        "price": 1200, "question": "Введите площадь покраски в м².\nНапример: 8"},
+    "calc_mangal":       {"name": "Мангал / барбекю",      "unit": "шт.",       "price": 8000, "question": None},
 }
 
 # ---------- КЛАВИАТУРЫ ----------
-
 def main_menu_kb():
-    builder = InlineKeyboardBuilder()
-    builder.row(
+    b = InlineKeyboardBuilder()
+    b.row(
         CallbackButton(text="🔧 Услуги", payload="services"),
         CallbackButton(text="💰 Цены", payload="prices"),
     )
-    builder.row(
-        CallbackButton(text="🧮 Калькулятор", payload="calc"),
-    )
-    builder.row(
+    b.row(CallbackButton(text="🧮 Калькулятор", payload="calc"))
+    b.row(
         CallbackButton(text="⏱ Сроки", payload="terms"),
         CallbackButton(text="📞 Оператор", payload="contact"),
     )
-    return builder.as_markup()
+    return b.as_markup()
 
 
 def contact_kb():
-    builder = InlineKeyboardBuilder()
-    builder.row(CallbackButton(text="💬 WhatsApp", payload="show_wa"))
-    builder.row(CallbackButton(text="✈️ Telegram", payload="show_tg"))
-    builder.row(CallbackButton(text="📱 MAX Messenger", payload="show_max"))
-    builder.row(CallbackButton(text="📞 Позвонить", payload="show_call"))
-    builder.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.row(CallbackButton(text="💬 WhatsApp", payload="show_wa"))
+    b.row(CallbackButton(text="✈️ Telegram", payload="show_tg"))
+    b.row(CallbackButton(text="📱 MAX Messenger", payload="show_max"))
+    b.row(CallbackButton(text="📞 Позвонить", payload="show_call"))
+    b.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
+    return b.as_markup()
 
 
 def back_kb():
-    builder = InlineKeyboardBuilder()
-    builder.row(CallbackButton(text="⬅ Назад в меню", payload="back_to_menu"))
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.row(CallbackButton(text="⬅ Назад в меню", payload="back_to_menu"))
+    return b.as_markup()
 
 
 def calculator_kb():
-    builder = InlineKeyboardBuilder()
-    builder.row(CallbackButton(text="🚪 Откатные ворота", payload="calc_vorota"))
-    builder.row(CallbackButton(text="🏠 Навес", payload="calc_naves"))
-    builder.row(CallbackButton(text="🪜 Лестница", payload="calc_lestnica"))
-    builder.row(CallbackButton(text="🛡 Ограждение", payload="calc_ograzhdenie"))
-    builder.row(CallbackButton(text="🎨 Покраска", payload="calc_pokraska"))
-    builder.row(CallbackButton(text="🔥 Мангал", payload="calc_mangal"))
-    builder.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.row(CallbackButton(text="🚪 Откатные ворота", payload="calc_vorota"))
+    b.row(CallbackButton(text="🏠 Навес", payload="calc_naves"))
+    b.row(CallbackButton(text="🪜 Лестница", payload="calc_lestnica"))
+    b.row(CallbackButton(text="🛡 Ограждение", payload="calc_ograzhdenie"))
+    b.row(CallbackButton(text="🎨 Покраска", payload="calc_pokraska"))
+    b.row(CallbackButton(text="🔥 Мангал", payload="calc_mangal"))
+    b.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
+    return b.as_markup()
 
 
 def cancel_kb():
-    builder = InlineKeyboardBuilder()
-    builder.row(CallbackButton(text="❌ Отмена", payload="back_to_menu"))
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.row(CallbackButton(text="❌ Отмена", payload="back_to_menu"))
+    return b.as_markup()
 
 
 def calc_result_kb():
-    builder = InlineKeyboardBuilder()
-    builder.row(CallbackButton(text="📞 Связаться с оператором", payload="contact"))
-    builder.row(CallbackButton(text="🧮 Ещё расчёт", payload="calc"))
-    builder.row(CallbackButton(text="⬅ В меню", payload="back_to_menu"))
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.row(CallbackButton(text="📞 Связаться с оператором", payload="contact"))
+    b.row(CallbackButton(text="🧮 Ещё расчёт", payload="calc"))
+    b.row(CallbackButton(text="⬅ В меню", payload="back_to_menu"))
+    return b.as_markup()
 
 
 # ---------- ОБРАБОТЧИКИ СООБЩЕНИЙ ----------
-
 @dp.message_created(CommandStart())
 async def cmd_start(event: MessageCreated):
-    logger.info(f"CMD /start от user_id={event.message.sender.user_id}")
+    user_id = event.message.sender.user_id
+    name = event.message.sender.first_name or "не указано"
+    username = getattr(event.message.sender, "username", None) or "—"
+
+    logger.info(f"CMD /start от user_id={user_id}, name={name}")
+
+    # Уведомление админу только при ПЕРВОМ заходе
+    if user_id not in seen_users:
+        seen_users.add(user_id)
+        await notify_admin(
+            f"🆕 *Новый пользователь бота!*\n\n"
+            f"ID: `{user_id}`\n"
+            f"Имя: {name}\n"
+            f"Username: @{username}"
+        )
+
     await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
 
 
@@ -211,14 +188,28 @@ async def handle_text(event: MessageCreated):
     text = event.message.body.text.strip()
     text_lower = text.lower()
     user_id = event.message.sender.user_id
-    logger.info(f"MSG: {text}")
+    logger.info(f"MSG от {user_id}: {text}")
 
-    # Сначала проверяем — может пользователь вводит число для калькулятора
+    # /whoami — узнать свой ID
+    if text_lower == "/whoami" or "кто я" in text_lower:
+        await event.message.answer(
+            f"Ваш user_id: `{user_id}`\n\n"
+            f"Скопируйте и передайте владельцу бота."
+        )
+        return
+
+    # /admin_test — тест уведомлений
+    if text_lower == "/admin_test":
+        await notify_admin(f"🔔 Тестовое уведомление от {user_id}")
+        await event.message.answer("Уведомление отправлено админу.")
+        return
+
+    # Ввод числа для калькулятора
     if user_id in user_states and user_states[user_id].get("step") == "waiting_number":
         try:
             number = float(text.replace(",", "."))
-            service_key = user_states[user_id]["service_key"]
-            service = CALC_SERVICES[service_key]
+            key = user_states[user_id]["service_key"]
+            service = CALC_SERVICES[key]
             total = int(number * service["price"])
 
             await event.message.answer(
@@ -229,17 +220,26 @@ async def handle_text(event: MessageCreated):
                 f"_Точную стоимость назовём после замера._",
                 attachments=[calc_result_kb()]
             )
+
+            # Уведомление админу о расчёте
+            await notify_admin(
+                f"🧮 *Расчёт в калькуляторе*\n\n"
+                f"ID: `{user_id}`\n"
+                f"Услуга: {service['name']}\n"
+                f"Количество: {number} {service['unit']}\n"
+                f"Итог: *~{total} ₽*"
+            )
+
             del user_states[user_id]
             return
         except ValueError:
             await event.message.answer(
-                "Пожалуйста, введите число.\n"
-                "Например: `4.5` или `20`",
+                "Пожалуйста, введите число.\nНапример: `4.5` или `20`",
                 attachments=[cancel_kb()]
             )
             return
 
-    # Обычные команды
+    # Команды
     if "услуг" in text_lower:
         await event.message.answer(TEXT_SERVICES, attachments=[back_kb()])
     elif "цен" in text_lower:
@@ -257,30 +257,28 @@ async def handle_text(event: MessageCreated):
 
 
 # ---------- ОБРАБОТЧИК CALLBACK ----------
-
 @dp.message_callback()
 async def handle_callback(event: MessageCallback):
     payload = event.callback.payload
     user_id = event.message.sender.user_id
-    logger.info(f"CALLBACK: {payload} от user_id={user_id}")
+    name = event.message.sender.first_name or "—"
+    logger.info(f"CALLBACK: {payload} от {user_id}")
 
-    # Калькулятор: выбор услуги
+    # Калькулятор
     if payload in CALC_SERVICES:
         service = CALC_SERVICES[payload]
         if service["question"] is None:
-            # Фикс-цена (мангал)
             await event.message.answer(
                 f"🔥 *{service['name']}*\n\n"
                 f"Примерная стоимость: *от {service['price']} ₽*\n\n"
                 f"_Точную цену назовём после обсуждения._",
                 attachments=[calc_result_kb()]
             )
+            await notify_admin(
+                f"🔥 *Интерес к мангалу*\n\nID: `{user_id}`\nИмя: {name}"
+            )
         else:
-            # Запрашиваем число
-            user_states[user_id] = {
-                "service_key": payload,
-                "step": "waiting_number"
-            }
+            user_states[user_id] = {"service_key": payload, "step": "waiting_number"}
             await event.message.answer(
                 f"🧮 *{service['name']}*\n\n{service['question']}",
                 attachments=[cancel_kb()]
@@ -295,6 +293,11 @@ async def handle_callback(event: MessageCallback):
         await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
     elif payload == "contact":
         await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
+        # Уведомление: клиент хочет связаться
+        await notify_admin(
+            f"📞 *Клиент хочет связаться!*\n\n"
+            f"ID: `{user_id}`\nИмя: {name}"
+        )
     elif payload == "calc":
         await event.message.answer(TEXT_CALC_INTRO, attachments=[calculator_kb()])
     elif payload == "show_wa":
@@ -306,7 +309,6 @@ async def handle_callback(event: MessageCallback):
     elif payload == "show_call":
         await event.message.answer(TEXT_CALL)
     elif payload == "back_to_menu":
-        # Чистим состояние, если было
         if user_id in user_states:
             del user_states[user_id]
         await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
@@ -315,10 +317,8 @@ async def handle_callback(event: MessageCallback):
 
 
 # ---------- ЗАПУСК ----------
-
 async def main():
     public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
-
     if not public_domain:
         logger.error("RAILWAY_PUBLIC_DOMAIN не задан! Запуск через polling...")
         await dp.start_polling(bot)
@@ -339,11 +339,8 @@ async def main():
     logger.info("Webhook успешно зарегистрирован")
 
     await dp.handle_webhook(
-        bot=bot,
-        host="0.0.0.0",
-        port=8080,
-        path="/webhook",
-        secret=WEBHOOK_SECRET
+        bot=bot, host="0.0.0.0", port=8080,
+        path="/webhook", secret=WEBHOOK_SECRET
     )
 
 
