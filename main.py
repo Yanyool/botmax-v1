@@ -40,18 +40,19 @@ ALL_PAYLOADS = {
 
 
 async def send_max_direct(user_id, text):
-    """Отправка уведомления в MAX напрямую через HTTP"""
+    """Отправка в MAX через Authorization header (новый формат API)"""
     if not user_id:
         logger.warning("send_max_direct: пустой user_id")
         return False
 
     url = f"{MAX_API_URL}/messages"
-    params = {"user_id": user_id, "access_token": MAX_BOT_TOKEN}
+    params = {"user_id": user_id}
+    headers = {"Authorization": MAX_BOT_TOKEN}
     payload = {"text": text}
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(url, params=params, json=payload)
+            r = await client.post(url, params=params, headers=headers, json=payload)
             logger.info(f"MAX DIRECT: status={r.status_code} body={r.text[:300]}")
             return r.status_code == 200
     except Exception as e:
@@ -364,10 +365,7 @@ async def handle_text(event: MessageCreated):
         logger.info(f"MSG user_id={user_id}: {text}")
 
         if text_lower == "/whoami":
-            await event.message.answer(
-                f"Ваш user_id (ADMIN_ID): `{user_id}`\n\n"
-                f"Скопируйте и проверьте в Railway."
-            )
+            await event.message.answer(f"Ваш user_id: `{user_id}`")
             return
         if text_lower == "/admin_test":
             logger.info(f"ЗАПУСК admin_test, ADMIN_ID={ADMIN_ID}")
