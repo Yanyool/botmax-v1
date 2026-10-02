@@ -29,6 +29,14 @@ dp = Dispatcher()
 user_states = {}
 seen_users = set()
 
+# Все payload'ы наших inline-кнопок — чтобы отличить callback от обычного текста
+ALL_PAYLOADS = {
+    "services", "prices", "terms", "contact", "calc",
+    "show_wa", "show_tg", "show_max", "show_call", "back_to_menu",
+    "calc_vorota", "calc_naves", "calc_lestnica", "calc_ograzhdenie",
+    "calc_pokraska", "calc_mangal",
+}
+
 
 async def notify_admin(text: str):
     if not ADMIN_ID:
@@ -97,6 +105,7 @@ CALC_SERVICES = {
     "calc_mangal":      {"name": "Мангал / барбекю",    "unit": "шт.",      "price": 8000, "question": None},
 }
 
+
 # ---------- КЛАВИАТУРЫ ----------
 def main_menu_kb():
     b = InlineKeyboardBuilder()
@@ -148,7 +157,7 @@ def calc_result_kb():
     return b.as_markup()
 
 
-# ---------- ОБРАБОТЧИКИ ----------
+# ---------- /start ----------
 @dp.message_created(CommandStart())
 async def cmd_start(event: MessageCreated):
     user_id = event.message.sender.user_id
@@ -163,75 +172,22 @@ async def cmd_start(event: MessageCreated):
     await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
 
 
-@dp.message_created(F.message.body.text)
-async def handle_text(event: MessageCreated):
-    text = event.message.body.text.strip()
-    text_lower = text.lower()
-    user_id = event.message.sender.user_id
-    logger.info(f"MSG от {user_id}: {text}")
-
-    if text_lower == "/whoami" or "кто я" in text_lower:
-        await event.message.answer(f"Ваш user_id: `{user_id}`\n\nСкопируйте и передайте владельцу бота.")
-        return
-
-    if text_lower == "/admin_test":
-        await notify_admin(f"🔔 Тестовое уведомление от {user_id}")
-        await event.message.answer("Уведомление отправлено админу.")
-        return
-
-    # === КАЛЬКУЛЯТОР: ожидание числа ===
-    if user_id in user_states and user_states[user_id].get("step") == "waiting_number":
-        try:
-            number = float(text.replace(",", "."))
-            key = user_states[user_id]["service_key"]
-            service = CALC_SERVICES[key]
-            total = int(number * service["price"])
-
-            await event.message.answer(
-                f"🧮 *Расчёт для: {service['name']}*\n\n"
-                f"• Количество: {number} {service['unit']}\n"
-                f"• Цена за единицу: {service['price']} ₽\n"
-                f"• *Примерная стоимость: ~{total} ₽*\n\n"
-                f"_Точную стоимость назовём после замера._",
-                attachments=[calc_result_kb()]
-            )
-
-            await notify_admin(
-                f"🧮 *Расчёт в калькуляторе*\n\nID: `{user_id}`\nУслуга: {service['name']}\nКоличество: {number} {service['unit']}\nИтог: *~{total} ₽*"
-            )
-
-            del user_states[user_id]
-            return
-        except ValueError:
-            await event.message.answer(
-                "Пожалуйста, введите число.\nНапример: `4.5` или `20`",
-                attachments=[cancel_kb()]
-            )
-            return
-
-    if "услуг" in text_lower:
-        await event.message.answer(TEXT_SERVICES, attachments=[back_kb()])
-    elif "цен" in text_lower:
-        await event.message.answer(TEXT_PRICES, attachments=[back_kb()])
-    elif "срок" in text_lower:
-        await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
-    elif "оператор" in text_lower or "связаться" in text_lower or "позвонить" in text_lower:
-        await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
-    elif "калькулятор" in text_lower or "расчёт" in text_lower or "расчет" in text_lower:
-        await event.message.answer(TEXT_CALC_INTRO, attachments=[calculator_kb()])
-    elif "привет" in text_lower or "здравств" in text_lower:
-        await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
-    else:
-        await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
-
-
-# ---------- CALLBACK: ФИКС ДУБЛЕЙ ЧЕРЕЗ ФИЛЬТР ----------
-@dp.message_callback(F.callback.payload != None)
+# ---------- CALLBACK (обработчик кнопок) ----------
+@dp.message_callback()
 async def handle_callback(event: MessageCallback):
-    payload = event.callback.payload
+    """Обработка нажатий на inline-кнопки"""
+    try:
+        payload = event.callback.payload
+    except AttributeError:
+        logger.warning("Callback без payload — пропуск")
+        return
+
+    if not payload:
+        return
+
     user_id = event.message.sender.user_id
     name = event.message.sender.first_name or "—"
-    logger.info(f"CALLBACK: {payload} от {user_id}")
+    logger.info(f"CALLBACK: {payload} от user_id={user_id}")
 
     # Калькулятор — выбор услуги
     if payload in CALC_SERVICES:
@@ -272,6 +228,80 @@ async def handle_callback(event: MessageCallback):
     elif payload == "back_to_menu":
         if user_id in user_states:
             del user_states[user_id]
+        await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
+    else:
+        await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
+
+
+# ---------- ТЕКСТ (обычные сообщения) ----------
+@dp.message_created(F.message.body.text)
+async def handle_text(event: MessageCreated):
+    """Обработка текстовых сообщений. Callback-события игнорируются."""
+
+    text = event.message.body.text.strip()
+    text_lower = text.lower()
+
+    # Защита: если это payload от кнопки — игнорируем (его обработает handle_callback)
+    if text_lower in ALL_PAYLOADS:
+        logger.info(f"SKIP payload-as-text: {text_lower}")
+        return
+
+    user_id = event.message.sender.user_id
+    logger.info(f"MSG от user_id={user_id}: {text}")
+
+    # /whoami
+    if text_lower == "/whoami" or "кто я" in text_lower:
+        await event.message.answer(f"Ваш user_id: `{user_id}`\n\nСкопируйте и передайте владельцу бота.")
+        return
+
+    # /admin_test
+    if text_lower == "/admin_test":
+        await notify_admin(f"🔔 Тестовое уведомление от {user_id}")
+        await event.message.answer("Уведомление отправлено админу.")
+        return
+
+    # === КАЛЬКУЛЯТОР: ожидание числа ===
+    if user_id in user_states and user_states[user_id].get("step") == "waiting_number":
+        try:
+            number = float(text.replace(",", "."))
+            key = user_states[user_id]["service_key"]
+            service = CALC_SERVICES[key]
+            total = int(number * service["price"])
+
+            await event.message.answer(
+                f"🧮 *Расчёт для: {service['name']}*\n\n"
+                f"• Количество: {number} {service['unit']}\n"
+                f"• Цена за единицу: {service['price']} ₽\n"
+                f"• *Примерная стоимость: ~{total} ₽*\n\n"
+                f"_Точную стоимость назовём после замера._",
+                attachments=[calc_result_kb()]
+            )
+
+            await notify_admin(
+                f"🧮 *Расчёт в калькуляторе*\n\nID: `{user_id}`\nУслуга: {service['name']}\nКоличество: {number} {service['unit']}\nИтог: *~{total} ₽*"
+            )
+
+            del user_states[user_id]
+            return
+        except ValueError:
+            await event.message.answer(
+                "Пожалуйста, введите число.\nНапример: `4.5` или `20`",
+                attachments=[cancel_kb()]
+            )
+            return
+
+    # Обычные текстовые команды
+    if "услуг" in text_lower:
+        await event.message.answer(TEXT_SERVICES, attachments=[back_kb()])
+    elif "цен" in text_lower:
+        await event.message.answer(TEXT_PRICES, attachments=[back_kb()])
+    elif "срок" in text_lower:
+        await event.message.answer(TEXT_TERMS, attachments=[back_kb()])
+    elif "оператор" in text_lower or "связаться" in text_lower or "позвонить" in text_lower:
+        await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
+    elif "калькулятор" in text_lower or "расчёт" in text_lower or "расчет" in text_lower:
+        await event.message.answer(TEXT_CALC_INTRO, attachments=[calculator_kb()])
+    elif "привет" in text_lower or "здравств" in text_lower:
         await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
     else:
         await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
