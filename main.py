@@ -1,6 +1,8 @@
 import os
+import json
 import logging
 import asyncio
+import httpx
 from maxapi import Bot, Dispatcher, F
 from maxapi.filters.command import CommandStart
 from maxapi.types import MessageCreated, MessageCallback, CallbackButton
@@ -15,6 +17,8 @@ logger = logging.getLogger(__name__)
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "svarmaster-secret-2025")
 ADMIN_ID = os.getenv("ADMIN_ID", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 if not MAX_BOT_TOKEN:
     raise RuntimeError("MAX_BOT_TOKEN не задан!")
@@ -24,16 +28,14 @@ dp = Dispatcher()
 
 user_states = {}
 user_locks = set()
-seen_users = set()
 
 ALL_PAYLOADS = {
-    "services", "prices", "terms", "contact", "calc",
+    "services", "prices", "terms", "contact", "calc", "lead",
     "show_wa", "show_tg", "show_max", "show_call", "back_to_menu",
     "calc_vorota", "calc_kalitka", "calc_naves", "calc_lestnica",
     "calc_ograzhdenie", "calc_pokraska", "calc_mangal", "calc_kozyrek",
     "calc_zabor", "calc_svarka",
 }
-
 
 def get_real_user_id(event):
     if hasattr(event, "callback") and event.callback is not None:
@@ -48,15 +50,21 @@ def get_real_user_id(event):
         return s.user_id
     return None
 
-
 async def notify_admin(text):
-    if not ADMIN_ID:
-        return
-    try:
-        await bot.send_message(chat_id=int(ADMIN_ID), text=text)
-    except Exception as e:
-        logger.error(f"notify_admin error: {e}")
-
+    if ADMIN_ID:
+        try:
+            await bot.send_message(chat_id=int(ADMIN_ID), text=text)
+        except Exception as e:
+            logger.error(f"MAX admin error: {e}")
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+                )
+        except Exception as e:
+            logger.error(f"TG notify error: {e}")
 
 # ========== ТЕКСТЫ ==========
 TEXT_MENU = "Здравствуйте! Я бот сварочной мастерской СварМастер.\nЧем могу помочь?\n\nВыберите пункт меню ниже:"
@@ -102,13 +110,20 @@ TEXT_MAX = "📱 MAX: https://max.ru/u/f9LHodD0cOLt4DlpXkQuKcUA-rwanDwWOPRvmBInm
 TEXT_CALL = "📱 Позвонить: +7 (915) 919-05-08"
 TEXT_CALC_INTRO = "🧮 *Калькулятор стоимости*\n\nВыберите услугу:"
 TEXT_FALLBACK = "Пожалуйста, воспользуйтесь кнопками меню ниже 👇"
+TEXT_LEAD_FORM = (
+    "📝 *Оставить заявку*\n\n"
+    "Напишите в одном сообщении:\n\n"
+    "*Имя, телефон, что нужно сделать*\n\n"
+    "_Пример: Иван, +7 999 123-45-67, ворота откатные 4 на 2_"
+)
 
+# ========== УСЛУГИ ==========
 CALC_SERVICES = {
     "calc_vorota": {
         "name": "Откатные ворота", "type": "multi",
         "question": "Введите ширину и высоту ворот в метрах через пробел.\nНапример: 4.5 2",
         "price_per_m2": 4500,
-        "desc": "Каркас: профтруба 60×40×2 и 40×20×2, направляющая 70×60. Обшивка — профнастил или евроштакетник.",
+        "desc": "Каркас: профтруба 60×40×2 и 40×20×2, направляющая 70×60.",
     },
     "calc_kalitka": {
         "name": "Калитка", "type": "single",
@@ -120,60 +135,59 @@ CALC_SERVICES = {
         "name": "Навес из поликарбоната", "type": "multi",
         "question": "Введите длину и ширину навеса в метрах через пробел.\nНапример: 6 3",
         "price_per_m2": 3800,
-        "desc": "Каркас 60×40×3, поликарбонат 8–10 мм. Расчёт под снеговую нагрузку МО (180 кг/м²).",
+        "desc": "Каркас 60×40×3, поликарбонат 8–10 мм. Снеговая нагрузка МО.",
     },
     "calc_kozyrek": {
         "name": "Козырёк", "type": "multi",
         "question": "Введите длину и ширину козырька в метрах через пробел.\nНапример: 2.5 1",
         "price_per_m2": 4200,
-        "desc": "Арочный или консольный. Крепление к стене, поликарбонат 8 мм.",
+        "desc": "Арочный или консольный, поликарбонат 8 мм.",
     },
     "calc_lestnica": {
         "name": "Лестница металлическая", "type": "single",
         "question": "Введите количество ступеней.\nНапример: 10",
         "price_per_step": 3200,
-        "desc": "Стандарт: подступенок 150–180 мм, проступь 270–300 мм.",
+        "desc": "Подступенок 150–180 мм, проступь 270–300 мм.",
     },
     "calc_ograzhdenie": {
         "name": "Ограждение / перила", "type": "single",
         "question": "Введите длину в метрах.\nНапример: 15",
         "price_per_m": 1800,
-        "desc": "Стойки 40×40×2, поручень Ø50. Высота стандарт 900 мм.",
+        "desc": "Стойки 40×40×2, поручень Ø50. Высота 900 мм.",
     },
     "calc_zabor": {
         "name": "Забор", "type": "single",
         "question": "Введите длину забора в метрах.\nНапример: 30",
         "price_per_m": 2200,
-        "desc": "Столбы 60×60×2, лаги 40×20×2, обшивка — профнастил/евроштакетник.",
+        "desc": "Столбы 60×60×2, лаги 40×20×2.",
     },
     "calc_pokraska": {
         "name": "Порошковая покраска", "type": "single",
         "question": "Введите площадь покраски в м².\nНапример: 8",
         "price_per_m2": 500,
-        "desc": "Обезжиривание, фосфатирование, нанесение порошка, полимеризация 180–200°C.",
+        "desc": "Обезжиривание, фосфатирование, полимеризация.",
     },
     "calc_mangal": {
         "name": "Мангал / барбекю", "type": "fixed",
         "price": 8000,
-        "desc": "Сталь 3 мм (стенки), дно 4 мм, ножки 25×25.",
+        "desc": "Сталь 3 мм (стенки), дно 4 мм.",
     },
     "calc_svarka": {
         "name": "Сварочные работы (выезд)", "type": "single",
         "question": "Введите количество часов работы.\nНапример: 3",
         "price_per_hour": 1500,
-        "desc": "Ручная дуговая, полуавтомат, аргон. Выезд по Москве и МО.",
+        "desc": "Ручная дуговая, полуавтомат, аргон.",
     },
 }
-
 
 # ========== КЛАВИАТУРЫ ==========
 def main_menu_kb():
     b = InlineKeyboardBuilder()
     b.row(CallbackButton(text="🔧 Услуги", payload="services"), CallbackButton(text="💰 Цены", payload="prices"))
     b.row(CallbackButton(text="🧮 Калькулятор", payload="calc"))
+    b.row(CallbackButton(text="📝 Оставить заявку", payload="lead"))
     b.row(CallbackButton(text="⏱ Сроки", payload="terms"), CallbackButton(text="📞 Оператор", payload="contact"))
     return b.as_markup()
-
 
 def contact_kb():
     b = InlineKeyboardBuilder()
@@ -184,12 +198,10 @@ def contact_kb():
     b.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
     return b.as_markup()
 
-
 def back_kb():
     b = InlineKeyboardBuilder()
     b.row(CallbackButton(text="⬅ Назад в меню", payload="back_to_menu"))
     return b.as_markup()
-
 
 def calculator_kb():
     b = InlineKeyboardBuilder()
@@ -206,20 +218,21 @@ def calculator_kb():
     b.row(CallbackButton(text="⬅ Назад", payload="back_to_menu"))
     return b.as_markup()
 
-
 def cancel_kb():
     b = InlineKeyboardBuilder()
     b.row(CallbackButton(text="❌ Отмена", payload="back_to_menu"))
     return b.as_markup()
 
-
-def calc_result_kb():
+def calc_result_kb(total):
     b = InlineKeyboardBuilder()
+    if total >= 50000:
+        b.row(CallbackButton(text="🎁 Заявка со скидкой 10%", payload="lead"))
+    else:
+        b.row(CallbackButton(text="📝 Оставить заявку", payload="lead"))
     b.row(CallbackButton(text="📞 Связаться с оператором", payload="contact"))
     b.row(CallbackButton(text="🧮 Ещё расчёт", payload="calc"))
     b.row(CallbackButton(text="⬅ В меню", payload="back_to_menu"))
     return b.as_markup()
-
 
 # ========== РАСЧЁТ ==========
 def calculate_result(service_key, text):
@@ -261,10 +274,9 @@ def calculate_result(service_key, text):
         return total, f"{a} м × {b} м = {area:.2f} м² × {service['price_per_m2']} ₽/м²"
 
     if service["type"] == "fixed":
-        return service["price"], f"от {service['price']} ₽ (фикс)"
+        return service["price"], f"от {service['price']} ₽"
 
     return None, "Не могу посчитать"
-
 
 # ========== /start ==========
 @dp.message_created(CommandStart())
@@ -276,13 +288,10 @@ async def cmd_start(event: MessageCreated):
     try:
         name = event.message.sender.first_name or "—"
         logger.info(f"/start user_id={user_id}")
-        if user_id not in seen_users:
-            seen_users.add(user_id)
-            await notify_admin(f"🆕 Новый пользователь: {name} (ID {user_id})")
+        await notify_admin(f"🆕 Новый пользователь бота: {name} (ID {user_id})")
         await event.message.answer(TEXT_MENU, attachments=[main_menu_kb()])
     finally:
         user_locks.discard(user_id)
-
 
 # ========== CALLBACK ==========
 @dp.message_callback()
@@ -313,14 +322,12 @@ async def handle_callback(event: MessageCallback):
         if payload in CALC_SERVICES:
             service = CALC_SERVICES[payload]
             if service["type"] == "fixed":
-                text = (
-                    f"🔥 *{service['name']}*\n\n"
-                    f"Ориентировочно: *от {service['price']} ₽*\n\n"
-                    f"_{service.get('desc', '')}_"
+                await event.message.answer(
+                    f"🔥 *{service['name']}*\n\nОриентировочно: *от {service['price']} ₽*\n\n_{service.get('desc', '')}_",
+                    attachments=[calc_result_kb(service["price"])]
                 )
-                await event.message.answer(text, attachments=[calc_result_kb()])
                 if user_id:
-                    await notify_admin(f"🔥 {service['name']}: {name} (ID {user_id})")
+                    await notify_admin(f"🔥 Интерес к мангалу: {name} (ID {user_id})")
             else:
                 if user_id:
                     user_states[user_id] = {"service_key": payload, "step": "waiting_number"}
@@ -342,6 +349,10 @@ async def handle_callback(event: MessageCallback):
                 await notify_admin(f"📞 Хочет связаться: {name} (ID {user_id})")
         elif payload == "calc":
             await event.message.answer(TEXT_CALC_INTRO, attachments=[calculator_kb()])
+        elif payload == "lead":
+            if user_id:
+                user_states[user_id] = {"step": "waiting_lead"}
+            await event.message.answer(TEXT_LEAD_FORM, attachments=[cancel_kb()])
         elif payload == "show_wa":
             await event.message.answer(TEXT_WA)
         elif payload == "show_tg":
@@ -360,7 +371,6 @@ async def handle_callback(event: MessageCallback):
         if user_id:
             user_locks.discard(user_id)
 
-
 # ========== ТЕКСТ ==========
 @dp.message_created(F.message.body.text)
 async def handle_text(event: MessageCreated):
@@ -371,51 +381,68 @@ async def handle_text(event: MessageCreated):
         return
 
     user_id = event.message.sender.user_id
-
     if user_id in user_locks:
         logger.info(f"MSG user_id={user_id} — ПРОПУСК (lock)")
         return
     user_locks.add(user_id)
 
     try:
+        name = event.message.sender.first_name or "—"
         logger.info(f"MSG user_id={user_id}: {text}")
 
         if text_lower == "/whoami":
             await event.message.answer(f"Ваш ID: {user_id}")
             return
         if text_lower == "/admin_test":
-            await notify_admin(f"🔔 Тест от {user_id}")
-            await event.message.answer("Отправлено.")
+            await notify_admin(f"🔔 Тестовое уведомление от {name} (ID {user_id})")
+            await event.message.answer("✅ Уведомление отправлено.")
             return
 
-        if user_id in user_states and user_states[user_id].get("step") == "waiting_number":
+        if user_id in user_states:
             state = user_states.pop(user_id, None)
-            if state is None:
-                return
-            key = state["service_key"]
-            service = CALC_SERVICES[key]
-            total, descr = calculate_result(key, text)
 
-            if total is None:
-                await event.message.answer(f"❌ {descr}", attachments=[cancel_kb()])
+            if state and state.get("step") == "waiting_number":
+                key = state["service_key"]
+                service = CALC_SERVICES[key]
+                total, descr = calculate_result(key, text)
+
+                if total is None:
+                    await event.message.answer(f"❌ {descr}", attachments=[cancel_kb()])
+                    return
+
+                discount = 0.1 if total >= 50000 else 0
+                final = int(total * (1 - discount))
+                disc_text = f"\n🎁 *Скидка 10% от объёма!*\n" if discount else ""
+                formatted = f"{final:,}".replace(",", " ")
+
+                await event.message.answer(
+                    f"🧮 *{service['name']}*\n\n"
+                    f"📐 Расчёт: {descr}\n"
+                    f"{disc_text}"
+                    f"💰 *Примерная стоимость: ~{formatted} ₽*\n\n"
+                    f"_Точную стоимость назовём после замера._",
+                    attachments=[calc_result_kb(total)]
+                )
+                await notify_admin(
+                    f"🧮 *Расчёт в калькуляторе*\n\n"
+                    f"ID: `{user_id}` ({name})\n"
+                    f"Услуга: {service['name']}\n"
+                    f"Расчёт: {descr}\n"
+                    f"Итог: *~{formatted} ₽*"
+                )
                 return
 
-            formatted_total = f"{total:,}".replace(",", " ")
-            await event.message.answer(
-                f"🧮 *{service['name']}*\n\n"
-                f"📐 Расчёт: {descr}\n"
-                f"💰 *Примерная стоимость: ~{formatted_total} ₽*\n\n"
-                f"_Точную стоимость назовём после замера._",
-                attachments=[calc_result_kb()]
-            )
-            await notify_admin(
-                f"🧮 *Расчёт*\n\n"
-                f"ID: `{user_id}`\n"
-                f"Услуга: {service['name']}\n"
-                f"Расчёт: {descr}\n"
-                f"Итог: *~{formatted_total} ₽*"
-            )
-            return
+            if state and state.get("step") == "waiting_lead":
+                await notify_admin(
+                    f"📝 *НОВАЯ ЗАЯВКА!*\n\n"
+                    f"От: {name} (ID `{user_id}`)\n\n"
+                    f"Текст:\n{text}"
+                )
+                await event.message.answer(
+                    "✅ *Заявка принята!*\n\nМы свяжемся с вами в ближайшее время.",
+                    attachments=[back_kb()]
+                )
+                return
 
         if "услуг" in text_lower:
             await event.message.answer(TEXT_SERVICES, attachments=[back_kb()])
@@ -427,11 +454,13 @@ async def handle_text(event: MessageCreated):
             await event.message.answer(TEXT_CONTACT, attachments=[contact_kb()])
         elif "калькулятор" in text_lower:
             await event.message.answer(TEXT_CALC_INTRO, attachments=[calculator_kb()])
+        elif "заявк" in text_lower:
+            user_states[user_id] = {"step": "waiting_lead"}
+            await event.message.answer(TEXT_LEAD_FORM, attachments=[cancel_kb()])
         else:
             await event.message.answer(TEXT_FALLBACK, attachments=[main_menu_kb()])
     finally:
         user_locks.discard(user_id)
-
 
 # ========== ЗАПУСК ==========
 async def main():
@@ -440,17 +469,14 @@ async def main():
         await dp.start_polling(bot)
         return
 
-    # 1. Снимаем ВСЕ старые подписки
     try:
         await bot.delete_webhook()
         logger.info("✅ Старые подписки удалены")
     except Exception as e:
         logger.warning(f"⚠️ delete_webhook: {e}")
 
-    # 2. Пауза, чтобы MAX обработал удаление
     await asyncio.sleep(2)
 
-    # 3. Подписываемся ТОЛЬКО на свой URL
     webhook_url = f"https://{public_domain}/webhook"
     logger.info(f"🔗 Webhook: {webhook_url}")
     await bot.subscribe_webhook(
@@ -461,7 +487,6 @@ async def main():
     logger.info("✅ Webhook OK")
 
     await dp.handle_webhook(bot=bot, host="0.0.0.0", port=8080, path="/webhook", secret=WEBHOOK_SECRET)
-
 
 if __name__ == "__main__":
     import asyncio
